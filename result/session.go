@@ -34,6 +34,9 @@ type SessionVo struct {
 	// 最后更新时间
 	LastUpdateTime int64 `json:"lastUpdateTime"`
 
+	// 登录时间
+	LoginTime int64 `json:"loginTime"`
+
 	// 更新字段集合，只有更新session时使用
 	UpdateFieldList []string `json:"updateFieldList"`
 
