@@ -22,6 +22,10 @@
     *   提供统一的 HTTP 接口返回结构 (`Result`)，内置标准状态码、分页模型。
     *   包含用户 Session、登录模型和验证码结构定义。
 *   **国际化 (`i18n`)**: 基于 `go-i18n` 的多语言支持工具。
+*   **文件服务客户端 (`file-client`)**: 
+    *   针对 `wueasy-file-server` 封装的专属客户端工具。
+    *   支持 Nacos 服务发现和直接 HTTP 访问。
+    *   提供文件的高效流式上传、下载、删除功能，并完整支持大文件分片上传及分片下载。
 *   **系统服务 (`system-service`)**: 
     *   基于 `kardianos/service` 封装。
     *   支持将 Go 编译后的程序一键安装、启动、停止和卸载为 Windows/Linux 后台系统服务。
@@ -121,6 +125,33 @@ func initNacos() {
     }
     // 初始化并注册服务
     nacosClient.RegisterService(cfg)
+}
+```
+
+#### 📌 文件服务客户端 (File Client)
+```go
+import (
+    "github.com/wueasy/wueasy-go-tools/file-client"
+)
+
+func main() {
+    // 创建客户端，默认支持从 Nacos 获取服务地址，也可以直接配置 BaseUrl
+    client := fileClient.NewFileClient("file-server", "DEFAULT_GROUP").
+        SetBaseUrl("http://127.0.0.1:9830")
+
+    ctx := context.Background()
+    
+    // 1. 上传本地文件
+    uploadResp, err := client.UploadLocalFile(ctx, "document", "/path/to/test.pdf")
+    if err != nil {
+        panic(err)
+    }
+
+    // 2. 下载文件
+    fileData, err := client.Download(ctx, "document", uploadResp.Data.FilePath)
+    
+    // 3. 删除文件
+    _, err = client.Delete(ctx, "document", uploadResp.Data.FilePath)
 }
 ```
 
