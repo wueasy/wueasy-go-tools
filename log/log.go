@@ -65,11 +65,6 @@ func (c *traceIdCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcor
 }
 
 func (c *traceIdCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
-	// Add traceId to logger name so it appears right after level/hostname/servicename
-	// The standard zapcore.ConsoleEncoder outputs logger name before caller/message
-	// Format we want: TIME LEVEL [HOSTNAME] [SERVICENAME] [TRACEID]
-
-	// Append traceId to the entry's logger name
 	if c.traceId != "" {
 		if ent.LoggerName == "" {
 			ent.LoggerName = "[" + c.traceId + "]"
@@ -81,26 +76,64 @@ func (c *traceIdCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
 	return c.Core.Write(ent, fields)
 }
 
+type sensitiveWriteCore struct {
+	zapcore.Core
+}
+
+func (c *sensitiveWriteCore) With(fields []zapcore.Field) zapcore.Core {
+	return &sensitiveWriteCore{
+		Core: c.Core.With(fields),
+	}
+}
+
+func (c *sensitiveWriteCore) Check(ent zapcore.Entry, ce *zapcore.CheckedEntry) *zapcore.CheckedEntry {
+	if c.Enabled(ent.Level) {
+		return ce.AddCore(ent, c)
+	}
+	return ce
+}
+
+func (c *sensitiveWriteCore) Write(ent zapcore.Entry, fields []zapcore.Field) error {
+	ent.Message = DesensitizeText(ent.Message)
+	for i := range fields {
+		if fields[i].Type == zapcore.StringType {
+			fields[i].String = desensitizeFieldValue(fields[i].Key, fields[i].String)
+		}
+	}
+	return c.Core.Write(ent, fields)
+}
+
 // Ctx 返回一个带有 traceId 的 SugaredLogger
 func Ctx(ctx context.Context) *zap.SugaredLogger {
 	if ctx == nil || sugarLogger == nil {
 		return sugarLogger
 	}
+
 	traceId := FromContext(ctx)
+	enabled := IsSensitiveEnabled()
+
+	if traceId == "" && !enabled {
+		return sugarLogger
+	}
+
+	logger := sugarLogger.Desugar()
+	core := logger.Core()
+
 	if traceId != "" {
-		// Wrap the core to customize the output format of traceId
-		logger := sugarLogger.Desugar()
-		wrappedCore := &traceIdCore{
-			Core:    logger.Core(),
+		core = &traceIdCore{
+			Core:    core,
 			traceId: traceId,
 		}
-		// Return a new logger with the wrapped core
-		return zap.New(wrappedCore,
-			zap.AddCaller(),
-			zap.AddCallerSkip(1),
-			zap.AddStacktrace(zapcore.ErrorLevel)).Sugar()
 	}
-	return sugarLogger
+
+	if enabled {
+		core = &sensitiveWriteCore{Core: core}
+	}
+
+	return zap.New(core,
+		zap.AddCaller(),
+		zap.AddCallerSkip(1),
+		zap.AddStacktrace(zapcore.ErrorLevel)).Sugar()
 }
 
 // IsDebugEnabled 判断是否启用Debug级别日志

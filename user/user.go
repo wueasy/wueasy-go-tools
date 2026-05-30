@@ -3,6 +3,7 @@ package user
 import (
 	"encoding/base64"
 	"encoding/json"
+	"strconv"
 
 	"github.com/wueasy/wueasy-go-tools/result"
 
@@ -40,6 +41,19 @@ func GetUserId(c *gin.Context) string {
 		return ""
 	}
 	return sessionData.UserId
+}
+
+// GetUserIdInt 获取用户ID（int64类型），未获取到或转换失败返回nil
+func GetUserIdInt(c *gin.Context) *int64 {
+	userId := GetUserId(c)
+	if userId == "" {
+		return nil
+	}
+	id, err := strconv.ParseInt(userId, 10, 64)
+	if err != nil {
+		return nil
+	}
+	return &id
 }
 
 // GetNickname 获取用户昵称

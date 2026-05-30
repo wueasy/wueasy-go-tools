@@ -89,20 +89,43 @@ type LogResponseConfig struct {
 	ForbidUrls []string `yaml:"forbid-urls"`
 }
 
-// SensitiveConfig 脱敏配置
-type SensitiveConfig struct {
-	// 字段脱敏规则
-	FieldRules []FieldRule `yaml:"field-rules"`
-	// 长字符串截取长度
-	MaxLength int `yaml:"max-length"`
+// MaskStrategy 掩码策略
+type MaskStrategy string
+
+const (
+	MaskBorder  MaskStrategy = "border"
+	MaskReplace MaskStrategy = "replace"
+	MaskPrefix  MaskStrategy = "prefix"
+	MaskSuffix  MaskStrategy = "suffix"
+)
+
+// MaskConfig 掩码配置
+type MaskConfig struct {
+	Strategy   MaskStrategy `yaml:"strategy"`
+	PrefixKeep int          `yaml:"prefix-keep"`
+	SuffixKeep int          `yaml:"suffix-keep"`
+	MaskChar   string       `yaml:"mask-char"`
 }
 
-// FieldRule 字段脱敏规则
+// SensitiveConfig 脱敏配置
+type SensitiveConfig struct {
+	FieldRules   []FieldRule   `yaml:"field-rules"`
+	ContentRules []ContentRule `yaml:"content-rules"`
+	MaxLength    int           `yaml:"max-length"`
+}
+
+// FieldRule 字段脱敏规则（用于JSON/query字段名匹配）
 type FieldRule struct {
-	// 字段名列表（支持正则表达式）
-	FieldNames []string `yaml:"field-names"`
-	// 脱敏类型
-	Type string `yaml:"type"`
+	FieldNames []string    `yaml:"field-names"`
+	Type       string      `yaml:"type"`
+	Mask       *MaskConfig `yaml:"mask"`
+}
+
+// ContentRule 内容脱敏规则（用于非JSON纯文本的模式匹配）
+type ContentRule struct {
+	Type    string      `yaml:"type"`
+	Pattern string      `yaml:"pattern"`
+	Mask    *MaskConfig `yaml:"mask"`
 }
 
 // RedisConfig 定义了Redis连接的配置结构
