@@ -7,8 +7,9 @@
 *   **配置管理 (`config`)**: 统一的结构化配置定义与管理。
 *   **日志系统 (`log`)**: 
     *   基于 `zap` 和 `lumberjack` 的高性能日志组件。
-    *   支持日志切割、敏感信息脱敏。
-    *   支持链路追踪 (TraceId) 并在 Gin 中间件中无缝接入。
+    *   支持日志切割、链路追踪 (TraceId) 并在 Gin 中间件中无缝接入。
+    *   **敏感信息脱敏**：支持字段名匹配（JSON / Query）和内容正则匹配（纯文本）两种模式。
+    *   四种通用掩码策略（`border` / `replace` / `prefix` / `suffix`），通过配置即可扩展。
 *   **数据库客户端 (`db-client`)**: 
     *   基于 `sqlx` 封装的数据库客户端。
     *   支持 MySQL 和 PostgreSQL。
@@ -72,6 +73,135 @@ func main() {
     log.CtxInfo(ctx, "收到新请求", "userId", 123)
 }
 ```
+
+#### 📌 日志脱敏 (Sensitive Data Masking)
+
+日志脱敏在 `Init()` 时配置生效，通过 `Ctx(ctx)` 输出的日志会**自动脱敏**，无需手动调用任何转换函数。
+
+**初始化配置**：
+
+```go
+import (
+    "github.com/wueasy/wueasy-go-tools/config"
+    "github.com/wueasy/wueasy-go-tools/log"
+)
+
+func main() {
+    log.Init("./", config.LogConfig{
+        Level: "debug",
+        Sensitive: config.SensitiveConfig{
+            MaxLength: 100,
+            // 字段名匹配——用于 Infow 结构化字段、JSON 响应体
+            FieldRules: []config.FieldRule{
+                {FieldNames: []string{"mobile", "phone"}, Type: "mobile"},
+                {FieldNames: []string{"password", "pwd"}, Type: "password"},
+                {FieldNames: []string{"bankcard", "cardno"}, Type: "bankcard"},
+                {FieldNames: []string{"email"}, Type: "email"},
+                {FieldNames: []string{"idcard"}, Type: "idcard"},
+                {FieldNames: []string{"name", "realname"}, Type: "name"},
+            },
+            // 内容正则匹配——用于 Infof 消息体、纯文本日志
+            ContentRules: []config.ContentRule{
+                {Type: "mobile"},
+                {Type: "email"},
+                {Type: "ip"},
+            },
+        },
+    })
+}
+```
+
+> **YAML 配置**（`application.yml`）：
+> ```yaml
+> log:
+>   level: debug
+>   sensitive:
+>     max-length: 100
+>     field-rules:
+>       - field-names: ["mobile", "phone"]
+>         type: "mobile"
+>       - field-names: ["password"]
+>         type: "password"
+>       # 自定义掩码策略
+>       - field-names: ["custom_no"]
+>         mask:
+>           strategy: "border"
+>           prefix-keep: 2
+>           suffix-keep: 3
+>           mask-char: "#"
+>     content-rules:
+>       - type: "mobile"
+>       - type: "email"
+>       - type: "ip"
+> ```
+
+**自动脱敏——推荐用法**（配置后无需手动调用）：
+
+```go
+ctx := log.NewContext(context.Background(), "trace-001")
+
+// ✅ 推荐：敏感字段用 Infow（结构化 key-value，可走字段名匹配）
+log.Ctx(ctx).Infow("用户注册",
+    "mobile", "13800138000",
+    "password", "abc123",
+    "email", "test@example.com",
+)
+// 输出：用户注册 {"mobile":"138****8000","password":"******","email":"tes*************"}
+
+// ✅ Infof 消息体——走内容正则匹配（mobile/email/ip 等有正则的类型）
+log.Ctx(ctx).Infof("用户13800138000登录，邮箱test@example.com")
+// 输出：用户138****8000登录，邮箱tes***@example.com
+
+// ✅ JSON 响应体自动检测（字段值看起来像 JSON 则递归脱敏）
+body := `{"user":{"mobile":"13800138000"},"password":"abc123"}`
+log.Ctx(ctx).Infow("HTTP响应", "response", body)
+// 输出：HTTP响应 {"response":"{\"password\":\"******\",\"user\":{\"mobile\":\"138****8000\"}}"}
+```
+
+> **Infof vs Infow 差异**：`Infof` 会将参数格式化成一条消息字符串，丢失字段 key，只能走内容正则。`Infow` 保留 key-value 结构，可同时走字段名匹配 + 内容正则 + JSON 自动检测，**脱敏更精确**。建议敏感字段统一使用 `Infow`。
+
+**手动脱敏 API**（适用于在日志输出前对数据进行脱敏）：
+
+```go
+// 单个值脱敏
+log.Desensitize("13800138000", log.Mobile)  // 138****8000
+
+// JSON 脱敏（递归处理嵌套字段）
+body := `{"user":{"mobile":"13800138000"},"password":"abc123"}`
+log.DesensitizeJSON(body)   // 含长字符串截断
+log.DesensitizeJSON2(body)  // 不含长字符串截断
+
+// Query 参数脱敏
+log.DesensitizeQuery("mobile=13800138000&name=张三&page=1")
+
+// 纯文本脱敏（内容正则匹配）
+log.DesensitizeText("用户13800138000的邮箱test@example.com")
+```
+
+**四种掩码策略**：
+
+| 策略 | 说明 | 输入 | 输出 |
+|------|------|------|------|
+| `border` | 保留首尾 | `13800138000` | `138****8000` |
+| `replace` | 全部替换 | `abc123` | `******` |
+| `prefix` | 仅保留前缀 | `wxid_abc` | `wxi******` |
+| `suffix` | 仅保留后缀 | `123456` | `***456` |
+
+**预设类型及内置内容正则**：
+
+| 类型 | 内容正则 | 说明 |
+|------|----------|------|
+| `mobile` | `1[3-9]\d{9}` | 手机号 |
+| `idcard` | `\d{17}[\dXx]` | 身份证号 |
+| `bankcard` | `\d{16,19}` | 银行卡号 |
+| `email` | `[a-zA-Z0-9._%+-]+@…` | 邮箱 |
+| `ip` | `\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}` | IP地址 |
+| `creditcode` | `[0-9A-HJ-NPQRTUWXY]{2}\d{6}…` | 统一信用代码 |
+| `qq` | `[1-9]\d{4,10}` | QQ号 |
+| `password` | — | 无正则，仅字段名匹配 |
+| `name` | — | 无正则，仅字段名匹配 |
+
+> **注意**：`content-rules` 中若已填写 `pattern` 则优先使用自定义正则，否则使用预设正则。若类型无预设正则（如 `name`、`password`），纯文本脱敏会跳过该规则。
 
 #### 📌 数据库连接 (DB Client)
 ```go
