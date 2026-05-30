@@ -214,29 +214,17 @@ func Init(rootPath string, conf config.LogConfig) {
 
 // 自定义 LevelEncoder 实现 Spring Boot 风格格式
 func springBootStyleLevelEncoder(l zapcore.Level, enc zapcore.PrimitiveArrayEncoder) {
-
-	// 根据日志级别设置不同的颜色
-	// var color string
-	// switch l {
-	// case zapcore.DebugLevel:
-	// 	color = "\x1b[36m" // 青色
-	// case zapcore.InfoLevel:
-	// 	color = "\x1b[32m" // 绿色
-	// case zapcore.WarnLevel:
-	// 	color = "\x1b[33m" // 黄色
-	// case zapcore.ErrorLevel:
-	// 	color = "\x1b[31m" // 红色
-	// default:
-	// 	color = "\x1b[0m" // 默认颜色
-	// }
-
-	// 添加颜色和重置颜色代码
-	// enc.AppendString(color + l.CapitalString() + "\x1b[0m" +
-	// 	"  [" + serviceName + "] " +
-	// 	"  [" + strconv.Itoa(pid) + "]")
-	enc.AppendString(l.CapitalString() +
-		" [" + hostname + "]" +
-		" [" + serviceName + "]")
+	var sb strings.Builder
+	sb.WriteString(l.CapitalString())
+	sb.WriteString(" [")
+	sb.WriteString(hostname)
+	sb.WriteByte(']')
+	if serviceName != "" {
+		sb.WriteString(" [")
+		sb.WriteString(serviceName)
+		sb.WriteByte(']')
+	}
+	enc.AppendString(sb.String())
 }
 
 // initLogger 初始化日志的通用函数
@@ -278,18 +266,19 @@ func initLogger(rootPath string) {
 
 	// 配置 EncoderConfig
 	encoderConfig := zapcore.EncoderConfig{
-		TimeKey:        "time",
-		LevelKey:       "level",
-		NameKey:        "logger",
-		CallerKey:      zapcore.OmitKey, // 禁用 caller 输出
-		FunctionKey:    zapcore.OmitKey,
-		MessageKey:     "msg",
-		StacktraceKey:  "stacktrace",
-		LineEnding:     zapcore.DefaultLineEnding,
-		EncodeLevel:    springBootStyleLevelEncoder, // 使用自定义 LevelEncoder
-		EncodeTime:     zapcore.ISO8601TimeEncoder,
-		EncodeDuration: zapcore.StringDurationEncoder,
-		EncodeCaller:   zapcore.ShortCallerEncoder,
+		TimeKey:          "time",
+		LevelKey:         "level",
+		NameKey:          "logger",
+		CallerKey:        zapcore.OmitKey,
+		FunctionKey:      zapcore.OmitKey,
+		MessageKey:       "msg",
+		StacktraceKey:    "stacktrace",
+		LineEnding:       zapcore.DefaultLineEnding,
+		EncodeLevel:      springBootStyleLevelEncoder,
+		EncodeTime:       zapcore.ISO8601TimeEncoder,
+		EncodeDuration:   zapcore.StringDurationEncoder,
+		EncodeCaller:     zapcore.ShortCallerEncoder,
+		ConsoleSeparator: " ",
 	}
 
 	encoderConfig.EncodeTime = func(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
