@@ -71,6 +71,16 @@ type LogConfig struct {
 	Request    LogRequestConfig  `yaml:"request"`     // 请求参数配置
 	Response   LogResponseConfig `yaml:"response"`    // 响应参数配置
 	Async      bool              `yaml:"async"`       // 是否异步写入日志
+	LevelFiles []LevelFileConfig `yaml:"level-files"` // 按级别输出到独立文件
+}
+
+// LevelFileConfig 按级别独立输出文件配置
+type LevelFileConfig struct {
+	Level      string `yaml:"level"`       // 最低级别（包含该级别及以上），如 "warn"、"error"
+	Filename   string `yaml:"filename"`    // 文件名，默认 "app-{level}.log"
+	MaxSize    int    `yaml:"max-size"`    // 文件最大大小（MB），为0时复用全局 MaxSize
+	MaxBackups int    `yaml:"max-backups"` // 最大保留旧文件数，为0时复用全局 MaxBackups
+	MaxAge     int    `yaml:"max-age"`     // 最大保留天数，为0时复用全局 MaxAge
 }
 
 type LogRequestConfig struct {

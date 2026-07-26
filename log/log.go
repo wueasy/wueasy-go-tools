@@ -18,6 +18,7 @@ import (
 var (
 	sugarLogger      *zap.SugaredLogger
 	lumberJackLogger *lumberjack.Logger
+	levelFileLoggers []*lumberjack.Logger
 	logConfig        config.LogConfig
 	atomicLevel      zap.AtomicLevel
 	serviceName      string
@@ -199,6 +200,9 @@ func Init(rootPath string, conf config.LogConfig) {
 	if conf.Async {
 		logConfig.Async = conf.Async
 	}
+	if len(conf.LevelFiles) > 0 {
+		logConfig.LevelFiles = conf.LevelFiles
+	}
 
 	// 获取主机名
 	var err error
@@ -229,26 +233,8 @@ func springBootStyleLevelEncoder(l zapcore.Level, enc zapcore.PrimitiveArrayEnco
 
 // initLogger 初始化日志的通用函数
 func initLogger(rootPath string) {
-	// 设置日志级别
-	var zapLevel zapcore.Level
-	if logConfig.Level == "" {
-		zapLevel = zapcore.InfoLevel // 默认级别
-	} else {
-		switch strings.ToLower(logConfig.Level) {
-		case "debug":
-			zapLevel = zapcore.DebugLevel
-		case "info":
-			zapLevel = zapcore.InfoLevel
-		case "warn":
-			zapLevel = zapcore.WarnLevel
-		case "error":
-			zapLevel = zapcore.ErrorLevel
-		default:
-			zapLevel = zapcore.InfoLevel
-		}
-	}
-
-	// 创建日志目录
+	atomicLevel = zap.NewAtomicLevel()
+	atomicLevel.SetLevel(parseLogLevel(logConfig.Level))
 	logDir := filepath.Join(rootPath, "logs")
 	if err := os.MkdirAll(logDir, 0755); err != nil {
 		fmt.Printf("创建日志目录失败: %v\n", err)
@@ -295,11 +281,38 @@ func initLogger(rootPath string) {
 	// 创建日志编码器
 	encoder := zapcore.NewConsoleEncoder(encoderConfig)
 
-	atomicLevel = zap.NewAtomicLevel()
-	atomicLevel.SetLevel(zapLevel)
+	// 创建按级别输出的独立文件 logger
+	levelFileLoggers = nil
+	var levelFileCores []zapcore.Core
+	for _, lfc := range logConfig.LevelFiles {
+		if lfc.Level == "" {
+			continue
+		}
+		threshold := parseLogLevel(lfc.Level)
+		filename := lfc.Filename
+		if filename == "" {
+			filename = "app-" + strings.ToLower(lfc.Level) + ".log"
+		}
+		lfLogger := &lumberjack.Logger{
+			Filename:   filepath.Join(logDir, filename),
+			MaxSize:    pickInt(lfc.MaxSize, logConfig.MaxSize),
+			MaxBackups: pickInt(lfc.MaxBackups, logConfig.MaxBackups),
+			MaxAge:     pickInt(lfc.MaxAge, logConfig.MaxAge),
+			Compress:   true,
+		}
+		levelFileLoggers = append(levelFileLoggers, lfLogger)
 
-	// 创建日志核心
-	core := zapcore.NewCore(
+		levelFileCores = append(levelFileCores, zapcore.NewCore(
+			encoder,
+			zapcore.AddSync(lfLogger),
+			zap.LevelEnablerFunc(func(lvl zapcore.Level) bool {
+				return lvl >= threshold
+			}),
+		))
+	}
+
+	// 创建主 Core：全级别 → app.log + stdout
+	mainCore := zapcore.NewCore(
 		encoder,
 		func() zapcore.WriteSyncer {
 			ws := zapcore.NewMultiWriteSyncer(
@@ -307,12 +320,10 @@ func initLogger(rootPath string) {
 				zapcore.AddSync(os.Stdout),
 			)
 			if logConfig.Async {
-				// 启用异步缓冲写入，缓冲区 1MB
-				// 注意：在异步模式下会有延迟，如果需要即时看到日志，建议关闭 Async
 				return &zapcore.BufferedWriteSyncer{
 					WS:            ws,
 					Size:          1024 * 1024,
-					FlushInterval: 1 * time.Second, // 增加定时刷新机制，避免日志长时间滞留在缓冲区
+					FlushInterval: 1 * time.Second,
 				}
 			}
 			return ws
@@ -320,9 +331,18 @@ func initLogger(rootPath string) {
 		atomicLevel,
 	)
 
+	// 合并所有 Core
+	cores := append([]zapcore.Core{mainCore}, levelFileCores...)
+	var core zapcore.Core
+	if len(cores) == 1 {
+		core = cores[0]
+	} else {
+		core = zapcore.NewTee(cores...)
+	}
+
 	// 创建日志记录器，添加服务名称
 	logger := zap.New(core,
-		zap.AddStacktrace(zapcore.ErrorLevel), // 只在错误级别添加堆栈信息
+		zap.AddStacktrace(zapcore.ErrorLevel),
 	)
 	sugarLogger = logger.Sugar()
 }
@@ -335,23 +355,7 @@ func Sync() {
 }
 
 func UpdateLogLevel(level string) {
-	// 将字符串日志级别转换为zapcore.Level
-	var zapLevel zapcore.Level
-	switch strings.ToLower(level) {
-	case "debug":
-		zapLevel = zapcore.DebugLevel
-	case "info":
-		zapLevel = zapcore.InfoLevel
-	case "warn":
-		zapLevel = zapcore.WarnLevel
-	case "error":
-		zapLevel = zapcore.ErrorLevel
-	default:
-		zapLevel = zapcore.InfoLevel
-	}
-
-	// 更新日志级别
-	atomicLevel.SetLevel(zapLevel)
+	atomicLevel.SetLevel(parseLogLevel(level))
 }
 
 func UpdateServiceName(name string) {
@@ -364,7 +368,6 @@ func UpdateLogRotation(maxSize, maxBackups, maxAge int) {
 		return
 	}
 
-	// 更新全局配置
 	if maxSize > 0 {
 		logConfig.MaxSize = maxSize
 		lumberJackLogger.MaxSize = maxSize
@@ -378,12 +381,26 @@ func UpdateLogRotation(maxSize, maxBackups, maxAge int) {
 		lumberJackLogger.MaxAge = maxAge
 	}
 
-	// 记录配置更新日志
+	// 同步更新按级别输出文件
+	for _, lf := range levelFileLoggers {
+		if lf == nil {
+			continue
+		}
+		if maxSize > 0 {
+			lf.MaxSize = maxSize
+		}
+		if maxBackups > 0 {
+			lf.MaxBackups = maxBackups
+		}
+		if maxAge > 0 {
+			lf.MaxAge = maxAge
+		}
+	}
+
 	if IsDebugEnabled() {
 		sugarLogger.Debugf("日志轮转配置已更新 - MaxSize: %dMB, MaxBackups: %d, MaxAge: %d天",
 			lumberJackLogger.MaxSize, lumberJackLogger.MaxBackups, lumberJackLogger.MaxAge)
 	}
-
 }
 
 // UpdateMaxSize 动态更新日志文件最大大小
@@ -417,6 +434,30 @@ func UpdateMaxAge(maxAge int) {
 	logConfig.MaxAge = maxAge
 	lumberJackLogger.MaxAge = maxAge
 	sugarLogger.Infof("日志最大保留天数已更新为: %d天", maxAge)
+}
+
+// parseLogLevel 将字符串日志级别转换为zapcore.Level
+func parseLogLevel(level string) zapcore.Level {
+	switch strings.ToLower(level) {
+	case "debug":
+		return zapcore.DebugLevel
+	case "info":
+		return zapcore.InfoLevel
+	case "warn":
+		return zapcore.WarnLevel
+	case "error":
+		return zapcore.ErrorLevel
+	default:
+		return zapcore.InfoLevel
+	}
+}
+
+// pickInt 优先使用自定义值，为0则回退到默认值
+func pickInt(custom, defaultVal int) int {
+	if custom > 0 {
+		return custom
+	}
+	return defaultVal
 }
 
 // GetLogConfig 获取当前日志配置
