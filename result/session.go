@@ -25,6 +25,9 @@ type SessionVo struct {
 	// 拓展map
 	ExtendedMap map[string]string `json:"extendedMap"`
 
+	// 会话加密密钥（登录时网关自动生成）
+	EncryptKey string `json:"encryptKey"`
+
 	// 数据权限Map<业务代码,Set<数据标识>>
 	DataAuthorizeMap map[string][]string `json:"dataAuthorizeMap"`
 

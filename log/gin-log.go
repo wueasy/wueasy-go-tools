@@ -85,28 +85,26 @@ func GinLogger(opts ...LogOption) gin.HandlerFunc {
 
 		if c.Request.Method == "GET" {
 			requestParams = DesensitizeQuery(query)
+		} else if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
+			requestParams = "[文件上传]"
 		} else {
-			if strings.Contains(c.Request.Header.Get("Content-Type"), "multipart/form-data") {
-				requestParams = "[文件上传]"
-			} else {
-				body, err := c.GetRawData()
-				if err == nil && len(body) > 0 {
-					rawBody = body
-					requestParams = DesensitizeJSON(string(body))
-					c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
-				}
+			body, err := c.GetRawData()
+			if err == nil && len(body) > 0 {
+				rawBody = body
+				requestParams = DesensitizeJSON(string(body))
+				c.Request.Body = io.NopCloser(bytes.NewBuffer(body))
 			}
 		}
 
-		// 记录断点请求信息
 		if isBreakpoint {
 			sendBreakpointRequest(c, options.BreakpointConfig, start, path, ip, requestId, rawBody)
 		}
 
-		Ctx(c.Request.Context()).Infof("开始接口请求[%s]，请求参数：%s，访问ip：%s",
-			path,
-			requestParams,
-			ip,
+		Ctx(c.Request.Context()).Infow("请求开始",
+			"method", c.Request.Method,
+			"path", path,
+			"params", requestParams,
+			"ip", ip,
 		)
 
 		var rw *responseWriter
@@ -126,13 +124,14 @@ func GinLogger(opts ...LogOption) gin.HandlerFunc {
 			if rw != nil {
 				respBody = rw.body.String()
 			}
-			sendBreakpointResponse(c, options.BreakpointConfig, start, requestId, statusCode, respBody, nil)
+			sendBreakpointResponse(c, options.BreakpointConfig, requestId, statusCode, respBody, nil)
 		}
 
-		Ctx(c.Request.Context()).Infof("结束接口请求[%s]，状态码：%d，执行时间：%.4f毫秒",
-			path,
-			statusCode,
-			float64(cost.Nanoseconds())/1e6,
+		Ctx(c.Request.Context()).Infow("请求结束",
+			"method", c.Request.Method,
+			"path", path,
+			"status", statusCode,
+			"cost", fmt.Sprintf("%.2fms", float64(cost.Nanoseconds())/1e6),
 		)
 	}
 }
@@ -143,41 +142,36 @@ func checkBreakpoint(c *gin.Context, config *BreakpointConfig, path, ip string) 
 	}
 
 	userId := user.GetUserId(c)
-	b2 := false
 
 	for _, rule := range config.Rules {
-		if antpathmatcher.Matchs(rule.Urls, path) {
-			if len(rule.RuleTypes) == 0 {
-				b2 = true
-				break
-			} else {
-				for _, ruleItem := range rule.RuleTypes {
-					if b2 {
-						break
-					}
-					switch ruleItem.Type {
-					case BreakpointRuleTypeIP:
-						b2 = ip != "" && matchPattern(ruleItem.Data, ip)
-					case BreakpointRuleTypeUSER:
-						b2 = userId != "" && matchPattern(ruleItem.Data, userId)
-					case BreakpointRuleTypeGATEWAY:
-						b2 = c.GetHeader("wueasy-breakpoint") == "true"
-					case BreakpointRuleTypeHEADER:
-						val := ""
-						if ruleItem.FieldName != "" {
-							val = c.GetHeader(ruleItem.FieldName)
-						}
-						b2 = val != "" && matchPattern(ruleItem.Data, val)
-					}
-				}
-				if b2 {
-					break
-				}
+		if !antpathmatcher.Matchs(rule.Urls, path) {
+			continue
+		}
+		if len(rule.RuleTypes) == 0 {
+			return true
+		}
+		for _, ruleItem := range rule.RuleTypes {
+			if matchRuleType(c, ruleItem, ip, userId) {
+				return true
 			}
-			break
 		}
 	}
-	return b2
+	return false
+}
+
+func matchRuleType(c *gin.Context, ruleItem BreakpointRuleItem, ip, userId string) bool {
+	switch ruleItem.Type {
+	case BreakpointRuleTypeIP:
+		return ip != "" && matchPattern(ruleItem.Data, ip)
+	case BreakpointRuleTypeUSER:
+		return userId != "" && matchPattern(ruleItem.Data, userId)
+	case BreakpointRuleTypeGATEWAY:
+		return c.GetHeader("wueasy-breakpoint") == "true"
+	case BreakpointRuleTypeHEADER:
+		val := c.GetHeader(ruleItem.FieldName)
+		return val != "" && matchPattern(ruleItem.Data, val)
+	}
+	return false
 }
 
 // matchPattern 执行正则表达式匹配
@@ -203,34 +197,20 @@ func matchPattern(pattern string, value string) bool {
 }
 
 func sendBreakpointRequest(c *gin.Context, config *BreakpointConfig, start time.Time, path, ip, requestId string, rawBody []byte) {
-	// 获取所有请求头
 	headers := make(map[string]string)
 	for k, v := range c.Request.Header {
 		headers[k] = strings.Join(v, ",")
 	}
 	headersJson, _ := json.Marshal(headers)
 
-	// URL参数
 	urlParams := make(map[string]string)
 	for k, v := range c.Request.URL.Query() {
 		urlParams[k] = strings.Join(v, ",")
 	}
 	urlParamsJson, _ := json.Marshal(urlParams)
 
-	// body参数 (假设如果不是文件上传且是json则转为map)
-	var bodyParams string
-	if len(rawBody) > 0 {
-		var bodyMap map[string]interface{}
-		if err := json.Unmarshal(rawBody, &bodyMap); err == nil {
-			bodyJson, _ := json.Marshal(bodyMap)
-			bodyParams = string(bodyJson)
-		} else {
-			// 不是json就直接转字符串或者保持为空
-			bodyParams = string(rawBody)
-		}
-	}
+	bodyParams := string(rawBody)
 
-	// Session信息
 	var sessionStr string
 	sessionData, _ := user.GetSessionData(c)
 	if sessionData != nil {
@@ -238,7 +218,7 @@ func sendBreakpointRequest(c *gin.Context, config *BreakpointConfig, start time.
 		sessionStr = string(sessionJson)
 	}
 
-	dto := BreakpointAddDto{
+	config.Handler(BreakpointAddDto{
 		ApiUrl:      path,
 		Body:        bodyParams,
 		UrlParams:   string(urlParamsJson),
@@ -250,12 +230,10 @@ func sendBreakpointRequest(c *gin.Context, config *BreakpointConfig, start time.
 		RequestTime: start.Format("2006-01-02 15:04:05.000000"),
 		ServiceName: config.ServiceName,
 		UserSession: sessionStr,
-	}
-
-	config.Handler(dto)
+	})
 }
 
-func sendBreakpointResponse(c *gin.Context, config *BreakpointConfig, start time.Time, requestId string, statusCode int, responseBody string, err error) {
+func sendBreakpointResponse(c *gin.Context, config *BreakpointConfig, requestId string, statusCode int, responseBody string, err error) {
 	// 获取所有响应头
 	headers := make(map[string]string)
 	for k, v := range c.Writer.Header() {
@@ -286,9 +264,14 @@ func GinRecovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {
 			if err := recover(); err != nil {
+				var reqBuf strings.Builder
+				reqBuf.WriteString(c.Request.Method)
+				reqBuf.WriteByte(' ')
+				reqBuf.WriteString(c.Request.URL.Path)
+
 				Ctx(c.Request.Context()).Error("[Recovery from panic]",
 					zap.Any("error", err),
-					zap.String("request", c.Request.Method+" "+c.Request.URL.Path),
+					zap.String("request", reqBuf.String()),
 					zap.String("query", c.Request.URL.RawQuery),
 					zap.Stack("stack"),
 				)

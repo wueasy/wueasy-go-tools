@@ -128,6 +128,42 @@ r.Use(log.GinLogger())    // 请求日志自动包含 TraceId
 r.Use(log.GinRecovery())  // panic 恢复
 ```
 
+#### 按级别分文件输出
+
+支持将指定级别及以上的日志独立输出到单独文件，实现日志分级存储。
+
+```go
+log.Init("./", config.LogConfig{
+    Level:      "debug",
+    MaxSize:    100,
+    MaxBackups: 30,
+    MaxAge:     7,
+    LevelFiles: []config.LevelFileConfig{
+        {Level: "warn"},                       // warn 及以上 → app-warn.log
+        {Level: "error",                       // error 及以上 → app-error.log
+            Filename:   "error.log",           // 自定义文件名（默认 app-error.log）
+            MaxSize:    50,                    // 独立控制文件大小
+            MaxBackups: 20,
+            MaxAge:     14,
+        },
+    },
+})
+```
+
+**配置说明：**
+
+| 字段 | 必填 | 说明 |
+|------|------|------|
+| `level` | 是 | 最低级别阈值，该级别及以上日志都会写入文件。可选值：`debug` / `info` / `warn` / `error` |
+| `filename` | 否 | 输出文件名，默认 `app-{level}.log`（如 `app-warn.log`） |
+| `max-size` | 否 | 文件轮转大小（MB），为 0 时复用全局 `max-size` |
+| `max-backups` | 否 | 最大保留旧文件数，为 0 时复用全局 `max-backups` |
+| `max-age` | 否 | 最大保留天数，为 0 时复用全局 `max-age` |
+
+> `level-files` 为数组，可配置多项。不配置则行为完全不变，向后兼容。
+
+---
+
 #### 断点日志
 
 ```go
@@ -355,33 +391,31 @@ type SessionData struct {
 
 ### 🌍 国际化 (`i18n`)
 
-多语言支持，内置中文 (zh) / 英文 (en) / 俄语 (ru)。
+纯 i18n 基础设施，不包含任何业务消息。业务方自行注册消息后使用。
 
 ```go
 import "github.com/wueasy/wueasy-go-tools/i18n"
 
-func init() {
-    i18n.Init(i18n.Config{
-        BundleDir: "./i18n/",
-    })
-}
+// 1. 初始化
+i18n.Init(i18n.Config{
+    LocaleDir:   "./i18n/",                     // 语言文件目录（可选）
+    DefaultLang: language.Chinese,              // 默认语言（可选，默认中文）
+})
 
-// 翻译（带模板参数）
-msg := i18n.Translate("login.account.password.error", "zh", map[string]interface{}{"Count": 3})
+// 2. 注册业务消息（硬编码或从 JSON 文件加载均可）
+i18n.RegisterMessages(map[string]map[string]string{
+    "zh": {"error": "系统繁忙，请稍后再试！", "login.fail": "账号或密码不正确!"},
+    "en": {"error": "System busy, please try again later!", "login.fail": "Incorrect account or password!"},
+})
 
-// 翻译（无模板参数）
-msg := i18n.TranslateWithoutData("error", "zh")
+// 3. 翻译使用
+msg := i18n.TranslateWithoutData("error", "zh")                          // 无模板
+msg := i18n.Translate("login.fail", "en", map[string]interface{}{})      // 带模板参数
+msg := i18n.TL("en", "error")    // 指定语言
+msg := i18n.T("error")           // 默认语言
 
-// 快捷方法
-msg := i18n.TL("en", "error")           // 指定语言
-msg := i18n.T("error")                   // 默认语言
-
-// 返回失败 Result
-result := i18n.TranslateFailResult("error", "zh")
-
-// 动态注册消息
+// 动态注册单条消息
 i18n.RegisterMessage("ru", "custom.key", "Пользовательское сообщение")
-i18n.RegisterMessages(map[string]map[string]string{...})
 ```
 
 ---

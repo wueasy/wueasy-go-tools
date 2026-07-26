@@ -917,3 +917,13 @@ func LogSql(ctx context.Context, showSql bool, sql string, args ...interface{}) 
 		log2.Ctx(ctx).Debugf("[SQL] %s | args=%v", sql, args)
 	}
 }
+
+// GetBodyHash 计算请求体的 SHA-256 哈希值，返回小写十六进制字符串
+// body 为空时返回空字符串
+func GetBodyHash(body string) string {
+	if body == "" {
+		return ""
+	}
+	hash := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(hash[:])
+}
