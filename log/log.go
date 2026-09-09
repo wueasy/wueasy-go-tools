@@ -311,14 +311,11 @@ func initLogger(rootPath string) {
 		))
 	}
 
-	// 创建主 Core：全级别 → app.log + stdout
+	// 创建主 Core：全级别 → app.log
 	mainCore := zapcore.NewCore(
 		encoder,
 		func() zapcore.WriteSyncer {
-			ws := zapcore.NewMultiWriteSyncer(
-				zapcore.AddSync(lumberJackLogger),
-				zapcore.AddSync(os.Stdout),
-			)
+			ws := zapcore.AddSync(lumberJackLogger)
 			if logConfig.Async {
 				return &zapcore.BufferedWriteSyncer{
 					WS:            ws,
